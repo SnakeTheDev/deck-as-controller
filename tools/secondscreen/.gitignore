@@ -1,0 +1,4 @@
+# Build output from the host-side sender. The Deck never needs this; only the host
+# machine that runs SecondScreen.exe does. Patterns are relative to this file.
+bin/
+obj/
