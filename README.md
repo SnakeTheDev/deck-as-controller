@@ -73,7 +73,7 @@ To switch, remove the Deck from your device's Bluetooth settings (on a Nintendo 
 
 ### Wired (USB)
 
-Over a USB-C cable the Deck is a wired PS5 or PS5 Edge controller: no pairing, and input
+Over a USB-C cable the Deck is a wired PS5, PS5 Edge, Xbox Elite or Steam Controller: no pairing, and input
 arrives much more steadily. On a Mac, the longest gap between updates was 14 ms over USB,
 against 80-140 ms over Bluetooth, and tested games felt lag-free.
 
@@ -91,6 +91,44 @@ Switching USB mode from the plugin works on the Deck OLED with BIOS F7G0114. On 
 versions the plugin shows how to turn it on in the BIOS instead: with the Deck off, hold
 **Volume +** and press **Power**, open **Setup Utility**, then **Advanced → USB Configuration →
 USB Dual Role Device → DRD**.
+
+### Trying a different USB identity
+
+Which vendor and product ID the Deck presents on the USB port decides which driver the host
+picks for it, and that is host specific: the Xbox Elite type deliberately uses a product ID
+Windows has no Xbox driver bound to, because that driver expects the Xbox GIP protocol, which
+this is not.
+
+If a host does not like the identity a type presents, change it without rebuilding:
+
+```sh
+echo 045e:0bff | sudo tee /run/sdcd-usb-id   # remove the file to go back to the default
+```
+
+Then turn the plugin off and on again, and unplug and replug the cable. The plugin's log line
+starting `USB gadget ready as ...` shows the identity and serial number it actually presented,
+which is what to compare against the hardware IDs in the host's device manager. The same
+setting works as an `SDCD_USB_ID` environment variable when you run `python3 -m sdcd` yourself.
+
+Two things a wired host needs from us, which cost a lot of time to find, so don't remove them:
+
+- **A serial number.** configfs creates `strings/0x409/serialnumber` along with the other
+  strings and leaves it empty, and `iSerialNumber` then points at a zero length string
+  descriptor. Windows reads that, gives up before `SET_CONFIGURATION`, and the device comes up
+  as "USB Input Device" with a Driver error while `hidusb` is loaded and perfectly happy.
+- **A report descriptor the host's HID parser accepts.** The Xbox Elite descriptor follows
+  SDL's Bluetooth copy, which nests the rumble report in a Logical collection under a vendor
+  usage page; Windows rejects the whole device over it, so the wired copy declares the same
+  reports flat in the top level application collection instead.
+
+And one per controller, which cost just as long:
+
+- **The right product ID for the link.** A controller has different IDs on different links and
+  hosts only accept the one that matches. The Steam Controller 2026 is `28de:1303` over
+  Bluetooth LE and `28de:1302` over a cable; presenting the Bluetooth one on a cable makes
+  Steam ignore the device completely rather than report it as a controller it cannot use. The
+  Bluetooth product ID is never wrong on a host that ignored the device — it just never gets
+  far enough to say so.
 
 ### Nintendo Switch
 
@@ -177,8 +215,17 @@ L5 / R5, both trackpads); only **⋯** stays reserved for the plugin, unless you
   uses the Deck as a speaker. Wired mode leaves the Deck's Bluetooth alone.
 - **Turning the plugin on or off wirelessly restarts the Deck's Bluetooth**, which drops any
   Bluetooth devices connected to the Deck for a moment.
-- **Wired mode is PS5 and PS5 Edge only.** The Xbox Elite, Switch Pro Controller and Steam
-  Controller types work over Bluetooth only.
+- **Wired mode is PS5, PS5 Edge, Xbox Elite and Steam Controller only.** The Switch Pro
+  Controller type works over Bluetooth only.
+- **Wired Xbox Elite is a HID gamepad, not an Xbox.** Windows shows it as "USB Input Device",
+  and games that need XInput rather than DirectInput won't see it. Making Windows treat it
+  as a real Xbox controller means implementing the GIP protocol, which is a much larger job.
+- **Wired rumble and haptics are untested** for the Xbox Elite and Steam Controller types.
+  Whether a host can send them at all depends on the host: Windows sends output reports with
+  `WriteFile`, which needs the interrupt OUT endpoint that this gadget can only offer *or*
+  `SET_REPORT`, which it refuses when that endpoint exists. Steam Controller wired is set up
+  for `SET_REPORT`, following the Linux driver, which is what hidapi sends when there is no OUT
+  endpoint. Reports from hosts where rumble works are welcome.
 - **Switch Pro Controller has fewer controls than the Deck.** ZL / ZR are on/off (the real
   controller's triggers aren't analog), the trackpads do nothing, and only L4 is mapped (to Capture).
 - **USB mode can only be switched from the plugin on known BIOS versions** (Deck OLED 512Gb, F7G0114
@@ -199,6 +246,7 @@ Reports from the developer and from users. Something missing or different for yo
 | OLED | iPad Mini 7 (iOS 27)         | Xbox Elite            | ✅ Works                                                                                    | [@jmedina21](https://github.com/jmedina21)                                                               |
 | OLED | Nintendo Switch              | Switch Pro Controller | ✅ Works, see [Nintendo Switch](#nintendo-switch)                                           | [@jmedina21](https://github.com/jmedina21)                                                               |
 | OLED | Mac (macOS 27), USB cable    | PS5 / PS5 Edge        | ✅ Works in Steam and native games, including back buttons, rumble and replugging           | [@jmedina21](https://github.com/jmedina21)                                                               |
+| OLED | Windows 11, USB cable          | PS5, PS5 Edge, Xbox Elite, Steam Controller | ✅ Enumerates and plays; shown as "USB Input Device", not as an Xbox controller    | reported by a user, fixed and verified over SSH                                                          || OLED | Steam Deck, USB cable          | PS5 / PS5 Edge        | ✅ Works                                                                                    | [@jmedina21](https://github.com/jmedina21)                                                               |
 | –    | Steam Frame                  | all                   | ✅ Works                                                                                    | [#3](https://github.com/jmedina21/deck-as-controller/issues/3)                                           |
 | LCD  | Linux PC (NixOS)             | PS5 Edge              | ✅ Works, including trackpads and back buttons. Remove any old pairing on both sides first. | [#4](https://github.com/jmedina21/deck-as-controller/issues/4)                                           |
 | –    | Linux PC (CachyOS), Steam    | Steam Controller      | ✅ Works                                                                                    | [@SrStylus](https://github.com/SrStylus), [#2](https://github.com/jmedina21/deck-as-controller/issues/2) |
@@ -212,9 +260,10 @@ The plugin's backend runs a small daemon with the Deck's system Python:
   channels and gives the Deck a gamepad identity, then serves the Bluetooth HID profile itself.
   Stopping the plugin, or rebooting, restores the stock setup.
 - **USB:** in wired mode the Deck's USB-C port acts as a USB device (Linux USB gadget) that
-  presents a DualSense's own USB descriptor. USB mode is turned on by changing the firmware's copy
-  of the _USB Dual Role Device_ setting (one byte in the `AmdSetup` UEFI variable), which takes
-  effect at the next boot. The original variable is backed up first.
+  presents the chosen controller's own USB report descriptor (DualSense, Xbox Elite, or the Steam
+  Controller). USB mode is turned on by changing the firmware's copy of the _USB Dual Role
+  Device_ setting (one byte in the `AmdSetup` UEFI variable), which takes effect at the next boot.
+  The original variable is backed up first.
 - **Input:** takes exclusive access to the built-in controller over USB, so Steam on the Deck
   stops reacting to it, and translates its reports into the chosen controller's format.
 - **Profiles:** `py_modules/sdcd/profiles/` defines each controller type: its Bluetooth
@@ -224,12 +273,46 @@ The plugin's backend runs a small daemon with the Deck's system Python:
 
 ```sh
 pnpm install
+python3 -m unittest discover -s tests -t .   # no hardware needed
 scripts/deploy.sh deck@<deck-ip>   # build and install over SSH (needs passwordless sudo on the Deck)
 scripts/package.sh                 # build out/deck-as-controller.zip
+python3 scripts/package.py         # the same zip, where rsync and zip may not be installed
 ```
 
-To log what the host sends (rumble, setup requests), run `sudo touch /run/sdcd-debug` on the
-Deck before turning the plugin on; the output appears in Decky's plugin log.
+The tests parse every controller's HID report descriptor and check each report the code sends
+and parses against the length that descriptor declares, and drive the USB gadget's configfs tree
+and `/dev/hidg0` ioctls against a model of the kernel's `f_hid`. They can't tell you whether a
+host likes the result; only plugging the Deck in can.
+
+`tools/` has what it took to diagnose a wired host that would not accept the Deck:
+
+| Script | What it does |
+| ------ | ------------ |
+| `deck.py` | runs a command, or copies a file, onto a Deck over SSH |
+| `deploy-sync.py` | copies the daemon onto a Deck's plugin and checks every file landed by hash |
+| `host-check.ps1` | reports what Windows made of the device, by vendor and product ID |
+| `bisect-gadget.sh` | builds a HID gadget by hand, the plugin's settings plus one flag per suspicion |
+| `dump-gadget.py` | prints every value a bound gadget is presenting |
+| `make-gadget.py` | presents one profile through the real `create_gadget`, with a chosen serial |
+| `watch-hidg.py` | presents a profile and logs everything the host sends, without the daemon |
+| `run-wired.py` | runs the real daemon in wired mode for a while and logs it |
+| `summarise-log.py` | summarises what the host sent, from the plugin's own log |
+| `dump-steam-attrs.py` | asks the Deck's own controller for its Steam attribute values |
+
+Two things to know before using them. **Give every run a fresh identity** — Windows caches by
+`VID:PID` and will keep reporting the previous run's failure; `bisect-gadget.sh --force-id
+1234:2001` and `make-gadget.py <profile> <mac>` both do that. And **`dump-steam-attrs.py` needs
+the plugin off**, because it claims the Deck's controller.
+
+```sh
+python3 tools/deck.py --put tools/bisect-gadget.sh /home/deck/bisect-gadget.sh
+sudo sh /home/deck/bisect-gadget.sh --profile xbox_elite --serial ABC123 --force-id 1234:2001
+pwsh -File tools/host-check.ps1
+```
+
+To log what the host sends (rumble, setup requests, the wired reports and GET_REPORT replies),
+run `sudo touch /run/sdcd-debug` on the Deck before turning the plugin on; the output appears in
+Decky's plugin log.
 
 ### Mapping USB mode on another BIOS
 

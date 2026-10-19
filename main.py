@@ -101,17 +101,32 @@ class Plugin:
     async def set_enabled(self, enabled: bool) -> dict:
         if enabled and not self._running():
             await self._start()
-        elif not enabled and self._running():
-            await self._send({"cmd": "stop"})
-            try:
-                await asyncio.wait_for(self.proc.wait(), timeout=15)
-            except asyncio.TimeoutError:
-                decky.logger.warning("daemon did not stop in time; killing it")
-                self.proc.kill()
-                await self.proc.wait()
-        if not enabled and self.pump:
-            await self.pump  # wait for the restore, so a restart can't race it
+        elif not enabled:
+            if self._running():
+                await self._send({"cmd": "stop"})
+                try:
+                    await asyncio.wait_for(self.proc.wait(), timeout=15)
+                except asyncio.TimeoutError:
+                    decky.logger.warning("daemon did not stop in time; killing it")
+                    self.proc.kill()
+                    await self.proc.wait()
+            if self.pump:
+                await self.pump  # wait for the restore, so a restart can't race it
+            # Turning controller mode off has to leave nothing behind, even if a daemon
+            # outlived the plugin and is still holding the Deck's controller or the USB
+            # gadget. Only daemons given a settings directory count, so this never matches
+            # the restore below.
+            await self._kill_stray_daemons()
         return self.state
+
+    async def _kill_stray_daemons(self):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pkill", "-f", "python3 -m sdcd --settings-dir",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await proc.wait()
+        except OSError:
+            decky.logger.warning("could not look for stray daemons; is pkill installed?")
 
     async def pair(self):
         await self._send({"cmd": "pair"})
