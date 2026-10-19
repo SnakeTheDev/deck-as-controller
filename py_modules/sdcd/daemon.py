@@ -121,6 +121,7 @@ class Daemon:
         self.tick_count = 0
         # Reconnect automatically after link loss, but not after the host disconnected us.
         self.auto_reconnect = True
+        self.usb_configured = False
         # Host to reconnect to; defaults to the most recent one paired as this profile.
         self.target: str | None = next(
             (h["address"] for h in self.hosts.items if h["profile"] == self.profile.id), None)
@@ -332,7 +333,7 @@ class Daemon:
         if not usb.udc_name():
             raise RuntimeError("USB mode is off. Turn it on in the plugin (the Deck restarts), "
                                "or set USB Dual Role Device to DRD in the BIOS.")
-        usb.create_gadget(self.profile)
+        usb.create_gadget(self.profile, bt_address_bytes())
         for _ in range(50):  # /dev/hidg0 appears once udev has seen the gadget
             if os.path.exists(usb.HIDG):
                 break
@@ -342,7 +343,14 @@ class Daemon:
     def _usb_loop(self):
         """Wired mode: start a session whenever a computer has set up the controller."""
         while not self.stopping.is_set():
-            if not self.link and usb.host_connected():
+            # Say out loud when the host configures us. "Configured" means the host
+            # enumerated the gadget and accepted it; a host that then shows an error has
+            # a driver problem, not a USB problem, and the two need different fixes.
+            connected = usb.host_connected()
+            if connected != self.usb_configured:
+                log.info("USB host %s the controller", "has configured" if connected else "has disconnected from")
+                self.usb_configured = connected
+            if connected and not self.link:
                 self._start_usb_session()
             self.stopping.wait(USB_POLL)
 
@@ -353,9 +361,10 @@ class Daemon:
             deck = DeckController()
             encoder = self.profile.new_encoder()
             latest = SharedInput()
-            link = usb.Link(self.usb_fd, self.profile,
+            link = usb.Link(self.usb_fd, self.profile, bt_address_bytes(),
                             get_report=lambda: encoder.encode(latest.take(), self.battery),
-                            on_rumble=lambda low, high, duration: _safe(deck.rumble, low, high, duration))
+                            on_rumble=lambda low, high, duration: _safe(deck.rumble, low, high, duration),
+                            on_haptic=lambda cmd: _safe(deck.haptic, cmd))
             self.link = link
             self.encoder = encoder
             self.session_thread = threading.Thread(target=self._session, args=(link, deck, latest),

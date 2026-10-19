@@ -43,6 +43,12 @@ class Profile:
     # Wired (USB gadget) support: the controller's USB HID descriptor, or empty if
     # this type only works over Bluetooth.
     usb_descriptor: bytes = b""
+    # Report IDs the host writes as feature reports over USB (commands, answered with GET_REPORT).
+    usb_feature_ids: tuple[int, ...] = ()
+    # The host sends all output and feature reports with SET_REPORT (no interrupt OUT endpoint).
+    usb_set_report: bool = False
+    # The product ID for wired mode, if it differs from the Bluetooth one (0 = use product_id).
+    usb_product_id: int = 0
 
     def new_encoder(self) -> Encoder:
         raise NotImplementedError
@@ -81,9 +87,18 @@ class Profile:
         """The USB input report for an encoded (Bluetooth) input report."""
         raise NotImplementedError
 
+    def _usb_as_bluetooth(self, msg: bytes) -> bytes:
+        """A report received over USB (starting with its report ID), in the Bluetooth
+        form the parsers expect: 0xA3 for a feature report, 0xA2 for an output report."""
+        return (b"\xA3" if msg[0] in self.usb_feature_ids else b"\xA2") + msg
+
     def parse_usb_rumble(self, msg: bytes) -> tuple[int, int, float | None] | None:
-        """Like parse_rumble, for an output report received over USB (starts with the report ID)."""
-        return None
+        """Like parse_rumble, for an output or feature report received over USB."""
+        return self.parse_rumble(self._usb_as_bluetooth(msg)) if msg else None
+
+    def parse_usb_haptic(self, msg: bytes) -> bytes | None:
+        """Like parse_haptic, for an output or feature report received over USB."""
+        return self.parse_haptic(self._usb_as_bluetooth(msg)) if msg else None
 
     def sdp_record(self) -> str:
         return f"""<?xml version="1.0" encoding="UTF-8" ?>

@@ -34,15 +34,23 @@ ID_TRIGGER_HAPTIC_PULSE = 0x8F
 ID_GET_STRING_ATTRIBUTE = 0xAE
 ID_TRIGGER_RUMBLE_CMD = 0xEB
 
-# (tag, value) pairs for GET_ATTRIBUTES_VALUES, as a real controller answers.
-# The firmware build time is far in the future so Steam never offers to update
-# the "controller's" firmware.
+# (tag, value) pairs for GET_ATTRIBUTES_VALUES. The tags are Valve's, from the enum in
+# drivers/hid/hid-steam.c, and the order and set of them are what a host checks: a real
+# Valve controller answers with nine of them, and a short answer is not recognised.
+# Asked of the Steam Deck's own controller over USB, the reply is:
+#   1 PRODUCT_ID  2 CAPABILITIES  10 CONNECTION_INTERVAL_IN_US  4 FIRMWARE_BUILD_TIME
+#   9 BOOTLOADER_BUILD_TIME  11 SECONDARY_FIRMWARE_BUILD_TIME  13 STREAMING
+#   12 SECONDARY_HW_ID  14 TRACKPAD_ID
 ATTRIBUTES = (
     (1, 0x1302),  # product id
     (2, 0),  # capabilities
-    (10, 0x68D2F92E),  # bootloader build time
-    (4, 0x7FFFFFFF),  # firmware build time
-    (9, 72),  # hardware id
+    (10, 0),  # connection interval, in microseconds
+    (4, 0x7FFFFFFF),  # firmware build time: far in the future so Steam never offers an update
+    (9, 0),  # bootloader build time
+    (11, 0),  # secondary firmware build time
+    (13, 0),  # streaming
+    (12, 0),  # secondary hardware id
+    (14, 0),  # trackpad id
 )
 SERIAL_LEN = 20
 SERIAL_PREFIX = "FXDK"
@@ -134,13 +142,22 @@ class SteamController(Profile):
     id = "steam_controller"
     label = "Steam Controller (trackpads, back buttons)"
     vendor_id = 0x28DE
-    product_id = 0x1303
+    product_id = 0x1303  # Bluetooth LE, used over Bluetooth
+    # Over a cable the 2026 controller presents 0x1302; 0x1303 above is its Bluetooth LE
+    # product ID, and Steam does not take that on a USB connection, so it ignores the
+    # device entirely rather than reporting it as a controller it cannot use.
+    usb_product_id = 0x1302
     bt_name = "Steam Controller"
     service_name = "Steam Controller"
     provider = "Valve"
     descriptor = DESCRIPTOR
     host_haptics = True
     qam_button = True
+    # Same descriptor and reports over USB. The host sends commands and haptics with
+    # SET_REPORT and reads command replies with GET_REPORT.
+    usb_descriptor = DESCRIPTOR
+    usb_feature_ids = (REPORT_FEATURE,)
+    usb_set_report = True
 
     def __init__(self):
         self.command = bytes(2)  # last feature command from the host, without the report ID
@@ -210,6 +227,10 @@ class SteamController(Profile):
         if report == OUT_SCRIPT:  # a2 85 <side> <script> <gain>
             return haptic_cmd(pad, HAPTIC_SCRIPT, struct.unpack_from("<b", msg, 4)[0], script=msg[3])
         return None
+
+    def usb_report(self, report: bytes) -> bytes:
+        # The same reports over USB, with their report IDs.
+        return report
 
     def side_reports(self, battery: Battery) -> list[bytes]:
         # Report 0x43: <charge state: 1 discharging, 2 charging, 4 full> <percent>

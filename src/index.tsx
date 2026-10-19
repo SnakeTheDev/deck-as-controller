@@ -480,7 +480,7 @@ function Content() {
                         layout="below"
                         description={
                             wired
-                                ? "Only the PS5 types work over USB."
+                                ? "Only the PS5, Xbox Elite and Steam Controller types work over USB."
                                 : "Each type is paired separately."
                         }
                         disabled={busy}
